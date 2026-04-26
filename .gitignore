@@ -1,0 +1,29 @@
+
+# InsForge & AI agent skills
+.insforge
+.agent
+.agents
+.augment
+.claude
+.cline
+.github/copilot*
+.kilocode
+.qoder
+.qwen
+.roo
+.trae
+.windsurf
+
+# Environment variables (NEVER commit secrets)
+.env
+.env.*
+!.env.example
+local.env
+
+# Node
+node_modules/
+.next/
+dist/
+build/
+*.log
+.DS_Store
