@@ -2,7 +2,6 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { createClient } from "@insforge/sdk";
 import { Loader2 } from "lucide-react";
 
 export default function OAuthCallbackPage() {
@@ -31,71 +30,58 @@ function CallbackInner() {
     const code = params.get("insforge_code") ?? params.get("code");
 
     (async () => {
-      const codeVerifier = sessionStorage.getItem("insforge_code_verifier") ?? undefined;
-
-      const sdk = createClient({ baseUrl: process.env.NEXT_PUBLIC_INSFORGE_URL! });
-
-      let accessToken: string | undefined;
-      let userId: string | undefined;
-      let userEmail: string | undefined;
-
-      // Path A: code present in URL → manual exchange (the happy first-load path).
-      if (code) {
-        const { data, error: exErr } = await sdk.auth.exchangeOAuthCode(
-          code,
-          codeVerifier
-        );
-        if (data?.accessToken && data.user) {
-          accessToken = data.accessToken;
-          userId = data.user.id;
-          userEmail = data.user.email;
-        } else if (exErr) {
-          // Most common cause: SDK already auto-exchanged this code on init,
-          // so a second exchange returns "already used". Fall through to the
-          // refreshSession path which works against the SDK's existing
-          // httpOnly cookie.
-          console.debug("Direct exchange failed, falling back:", exErr.message);
+      if (!code) {
+        if (!cancelled) {
+          setError(
+            "No `insforge_code` in the callback URL. The OAuth provider didn't return one — check the redirect URI is registered in your InsForge dashboard."
+          );
         }
-      }
-
-      // Path B: SDK already has a session cookie → refresh to grab a fresh
-      // access token without burning the (already-spent) OAuth code.
-      if (!accessToken) {
-        const { data: rs } = await sdk.auth.refreshSession();
-        if (rs?.accessToken && rs.user) {
-          accessToken = rs.accessToken;
-          userId = rs.user.id;
-          userEmail = rs.user.email;
-        }
-      }
-
-      // Path C: still nothing → show the real error.
-      if (!accessToken || !userId || !userEmail) {
-        if (!cancelled) setError("Could not finalize OAuth session. Try signing in again.");
         return;
       }
 
-      // Bridge SDK session → our httpOnly `wan_session` cookie + mirror to public.users.
-      sessionStorage.removeItem("insforge_code_verifier");
+      const codeVerifier =
+        sessionStorage.getItem("insforge_code_verifier") ?? undefined;
 
-      const res = await fetch("/api/auth/oauth-complete", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          accessToken,
-          user: { id: userId, email: userEmail },
-        }),
-      });
+      // Hand the code + codeVerifier to our own server, which exchanges
+      // server-to-server with InsForge and sets a same-origin session cookie.
+      // (Doing the exchange client-side fails on cross-domain deploys because
+      // InsForge sets refresh cookies on insforge.app, not insforge.site.)
+      try {
+        const res = await fetch("/api/auth/oauth-exchange", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ code, codeVerifier }),
+        });
 
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        if (!cancelled) setError(j.error ?? "Failed to finalize login");
-        return;
-      }
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          if (!cancelled) {
+            setError(
+              `OAuth exchange failed: ${
+                j.error ?? `HTTP ${res.status}`
+              }\n\n` +
+                "If this keeps happening, double-check the OAuth provider's " +
+                "redirect URI in your InsForge dashboard includes " +
+                "https://u7xccims.insforge.site/auth/callback."
+            );
+          }
+          return;
+        }
 
-      if (!cancelled) {
-        router.replace("/dashboard");
-        router.refresh();
+        sessionStorage.removeItem("insforge_code_verifier");
+
+        if (!cancelled) {
+          router.replace("/dashboard");
+          router.refresh();
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(
+            `Network error during OAuth exchange: ${
+              e instanceof Error ? e.message : String(e)
+            }`
+          );
+        }
       }
     })();
 
@@ -106,13 +92,15 @@ function CallbackInner() {
 
   return (
     <div className="dark-shell min-h-screen flex items-center justify-center px-6">
-      <div className="text-center space-y-4 max-w-sm">
+      <div className="text-center space-y-4 max-w-md">
         {error ? (
           <>
             <div className="font-mono text-xs uppercase tracking-wider text-red-300">
               OAuth failed
             </div>
-            <div className="text-sm text-ink-dim">{error}</div>
+            <div className="text-sm text-ink-dim whitespace-pre-line text-left">
+              {error}
+            </div>
             <a href="/login" className="btn btn-ghost text-sm">
               Back to sign in
             </a>
